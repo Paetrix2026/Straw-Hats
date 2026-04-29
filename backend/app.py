@@ -276,6 +276,11 @@ def create_app(*, validate_env: bool = True) -> Flask:
     app.register_blueprint(admin_bp)
     _start_media_sweeper()
 
+    # Start the daily scheduled job in the background
+    from backend.automation.daily_scraper import start_scheduler
+    start_scheduler()
+
+
     @app.get("/health")
     def health():
         return jsonify(
