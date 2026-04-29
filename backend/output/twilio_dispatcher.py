@@ -103,9 +103,13 @@ def send_voice_note(
 
     ``audio_path`` is a filesystem path under ``vidyutmitra_media`` (produced
     by ``output.kannada_tts.synthesize_to_temp_file``). We extract the
-    filename, build the public URL, and pass it to Twilio — Twilio's CDN
-    downloads the media synchronously during ``messages.create``, so we can
-    unlink the temp file right after.
+    filename, build the public URL, and pass it to Twilio.
+
+    NOTE: Twilio's CDN fetches the media URL asynchronously, several seconds
+    after ``messages.create`` returns. Pass ``cleanup=False`` from production
+    call paths and rely on the periodic sweeper in ``app._start_media_sweeper``
+    to reap the temp file — unlinking here races the fetch and yields 404s.
+    ``cleanup=True`` is retained for tests that don't use the real CDN.
     """
     import os as _os
 

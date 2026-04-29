@@ -29,8 +29,8 @@ pytestmark = pytest.mark.smoke
 class TestInitTtsClient:
     def test_raises_when_creds_not_set(self):
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-            with pytest.raises(RuntimeError, match="GOOGLE_APPLICATION_CREDENTIALS"):
+            os.environ.pop("SARVAM_API_KEY", None)
+            with pytest.raises(RuntimeError, match="SARVAM_API_KEY"):
                 kannada_tts.init_tts_client(force_reload=True)
 
 

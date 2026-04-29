@@ -49,8 +49,10 @@ LANGUAGE_CODE = "kn-IN"
 DEFAULT_VOICE = "neha"
 FALLBACK_VOICE = "priya"
 
-# Audio format: OPUS plays natively as WhatsApp voice note.
-AUDIO_FORMAT = "OPUS"
+# Audio format: opus (OGG/Opus) plays natively as WhatsApp voice note.
+# Sarvam expects lowercase enum values (wav|mp3|opus); uppercase silently
+# falls back to WAV, which WhatsApp rejects with Twilio error 63021.
+AUDIO_FORMAT = "opus"
 
 # Slightly slower pace for clarity over WhatsApp's compression.
 PACE = 0.95

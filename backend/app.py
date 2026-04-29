@@ -207,6 +207,37 @@ def process_bill_and_dispatch(
 # =============================================================================
 
 
+MEDIA_TTL_SECONDS = 300
+MEDIA_SWEEP_INTERVAL_SECONDS = 60
+
+
+def _start_media_sweeper() -> None:
+    """Daemon thread: deletes files in MEDIA_TMP_DIR older than MEDIA_TTL_SECONDS.
+
+    Twilio's CDN fetches media URLs asynchronously after ``messages.create``
+    returns, so the dispatcher cannot unlink immediately without racing the
+    fetch (manifests as 404s in our /media route → media drops in WhatsApp).
+    Files live for ~5 min, then this sweeper reaps them.
+    """
+    import time as _time
+
+    def _sweep():
+        while True:
+            try:
+                cutoff = _time.time() - MEDIA_TTL_SECONDS
+                for p in MEDIA_TMP_DIR.iterdir():
+                    try:
+                        if p.is_file() and p.stat().st_mtime < cutoff:
+                            p.unlink()
+                    except OSError:
+                        pass
+            except Exception:  # noqa: BLE001 — sweeper must never die
+                logger.exception("media sweeper iteration failed")
+            _time.sleep(MEDIA_SWEEP_INTERVAL_SECONDS)
+
+    threading.Thread(target=_sweep, daemon=True, name="media-sweeper").start()
+
+
 def create_app(*, validate_env: bool = True) -> Flask:
     _load_dotenv_if_available()
     if validate_env:
@@ -214,6 +245,7 @@ def create_app(*, validate_env: bool = True) -> Flask:
 
     app = Flask(__name__)
     app.register_blueprint(admin_bp)
+    _start_media_sweeper()
 
     @app.get("/health")
     def health():
@@ -336,24 +368,26 @@ def create_app(*, validate_env: bool = True) -> Flask:
 
 
 def _dispatch_voice_note(from_number, extraction, analysis) -> None:
-    """Compose Kannada summary → synthesize → dispatch → cleanup.
+    """Compose Kannada summary → synthesize → dispatch.
 
-    The twilio_dispatcher.send_voice_note handles the temp-file unlink in
-    its ``finally`` block, so we don't need to clean up here.
+    Cleanup is deferred to the periodic sweeper (``_start_media_sweeper``)
+    because Twilio's CDN fetches the media asynchronously some seconds
+    after ``messages.create`` returns. Unlinking immediately would race
+    the fetch and Twilio would 404.
     """
     from backend.output import kannada_tts, response_composer, twilio_dispatcher
 
     text = response_composer.compose_kannada_voice_summary(extraction, analysis)
     audio_path = kannada_tts.synthesize_to_temp_file(text)
-    twilio_dispatcher.send_voice_note(from_number, audio_path)
+    twilio_dispatcher.send_voice_note(from_number, audio_path, cleanup=False)
 
 
 def _dispatch_infographic(from_number, extraction, analysis) -> None:
-    """Generate personalised PNG → dispatch → cleanup."""
+    """Generate personalised PNG → dispatch. Cleanup deferred to sweeper."""
     from backend.output import infographic, twilio_dispatcher
 
     image_path = infographic.render_to_temp_file(extraction, analysis)
-    twilio_dispatcher.send_image(from_number, image_path)
+    twilio_dispatcher.send_image(from_number, image_path, cleanup=False)
 
 
 def _handle_followup(phone_number: str, keyword: str) -> str:
