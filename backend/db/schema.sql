@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone_number TEXT UNIQUE NOT NULL,
     consent_given BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 
     -- No format CHECK: Twilio already validates the "From" field before
     -- it hits the webhook, and the DPDPA gate is behavior-level (STOP
@@ -102,3 +102,17 @@ CREATE INDEX IF NOT EXISTS idx_bills_user ON bills(user_id);
 CREATE INDEX IF NOT EXISTS idx_bills_gj ON bills(is_gj_beneficiary) WHERE is_gj_beneficiary = TRUE;
 CREATE INDEX IF NOT EXISTS idx_bills_period ON bills(billing_period_end);
 CREATE INDEX IF NOT EXISTS idx_bills_user_period ON bills(user_id, billing_period_end DESC);
+
+-- =============================================================
+-- FEEDBACK
+-- User feedback (text or voice).
+-- =============================================================
+CREATE TABLE IF NOT EXISTS feedback (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+    feedback_text TEXT,
+    audio_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);

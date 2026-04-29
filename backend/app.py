@@ -272,6 +272,36 @@ def create_app(*, validate_env: bool = True) -> Flask:
             return _twiml(resp.message)
 
         # --- Consented user ----------------------------------------------------
+        # Feedback flow
+        is_feedback = False
+        feedback_text = None
+        audio_url = None
+
+        if command.startswith("FEEDBACK"):
+            is_feedback = True
+            feedback_text = body[8:].strip() or None
+            if num_media > 0 and media_url:
+                audio_url = media_url
+        elif num_media > 0 and request.form.get("MediaContentType0", "").startswith("audio/"):
+            is_feedback = True
+            audio_url = media_url
+            feedback_text = body if body else None
+
+        if is_feedback:
+            if not feedback_text and not audio_url:
+                return _twiml("Please provide your feedback after the word FEEDBACK, or send a voice note with FEEDBACK.")
+            try:
+                from backend.db import supabase_client
+                logger.info(f"Writing feedback for {from_number}")
+                supabase_client.write_feedback(
+                    phone_number=from_number,
+                    feedback_text=feedback_text,
+                    audio_url=audio_url,
+                )
+                return _twiml("Thank you for your feedback! 🙏")
+            except Exception:
+                logger.exception("supabase write_feedback failed")
+                return _twiml("Sorry, we couldn't save your feedback right now. Please try again later.")
         if num_media > 0 and media_url:
             # Kick off processing in a daemon thread. The webhook must return
             # within ~15s (Twilio) and processing takes ~10s; we'd just barely

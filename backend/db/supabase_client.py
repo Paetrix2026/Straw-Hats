@@ -227,6 +227,28 @@ def write_bill(
     return inserted.data[0]["id"]
 
 
+def write_feedback(
+    phone_number: str,
+    feedback_text: Optional[str] = None,
+    audio_url: Optional[str] = None,
+    *,
+    client: Optional[Any] = None,
+) -> str:
+    """Persist user feedback (text or voice)."""
+    c = client or init_client()
+    user = get_or_create_user(phone_number, client=c)
+    
+    payload = {
+        "user_id": user["id"],
+        "feedback_text": feedback_text,
+        "audio_url": audio_url
+    }
+    inserted = c.table("feedback").insert(payload).execute()
+    if not inserted.data:
+        raise RuntimeError("failed to insert feedback row")
+    return inserted.data[0]["id"]
+
+
 def delete_user_cascade(
     phone_number: str,
     *,
