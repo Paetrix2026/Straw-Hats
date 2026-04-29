@@ -49,6 +49,8 @@ from backend.output.response_composer import (
 FOLLOWUP_KEYWORDS = frozenset({"SOLAR", "FIXED", "SUBSIDY", "CLIFF"})
 FOLLOWUP_LIMIT = 2
 
+_FEEDBACK_WAITING = set()
+
 logger = logging.getLogger(__name__)
 
 APP_VERSION = "0.5.0"
@@ -186,6 +188,18 @@ def process_bill_and_dispatch(
     except Exception:  # noqa: BLE001
         logger.exception("infographic dispatch failed")
 
+    # Send feedback prompt
+    try:
+        feedback_prompt = (
+            "Help us improve VidyutMitra! 🌟\n\n"
+            "If you want to send a feedback, type *FEEDBACK* or *F*."
+        )
+        twilio_dispatcher.send_text(
+            from_number, feedback_prompt, client=twilio_client_override
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("feedback prompt dispatch failed")
+
     # Persist. DB failure must not block the user-facing response — log and move on.
     try:
         c = supabase_client_override or supabase_client.init_client()
@@ -273,23 +287,34 @@ def create_app(*, validate_env: bool = True) -> Flask:
 
         # --- Consented user ----------------------------------------------------
         # Feedback flow
+        if command == "F" or command == "FEEDBACK":
+            _FEEDBACK_WAITING.add(from_number)
+            return _twiml("We'd love to hear your thoughts! 📝\n\nPlease send us your feedback via text or simply send us a voice note.")
+
         is_feedback = False
         feedback_text = None
         audio_url = None
 
-        if command.startswith("FEEDBACK"):
+        if from_number in _FEEDBACK_WAITING and num_media == 0:
+            is_feedback = True
+            feedback_text = body.strip() or None
+            _FEEDBACK_WAITING.discard(from_number)
+        elif command.startswith("FEEDBACK"):
             is_feedback = True
             feedback_text = body[8:].strip() or None
             if num_media > 0 and media_url:
                 audio_url = media_url
+            _FEEDBACK_WAITING.discard(from_number)
         elif num_media > 0 and request.form.get("MediaContentType0", "").startswith("audio/"):
             is_feedback = True
             audio_url = media_url
-            feedback_text = body if body else None
+            feedback_text = body.strip() if body else None
+            _FEEDBACK_WAITING.discard(from_number)
 
         if is_feedback:
             if not feedback_text and not audio_url:
-                return _twiml("Please provide your feedback after the word FEEDBACK, or send a voice note with FEEDBACK.")
+                _FEEDBACK_WAITING.add(from_number)
+                return _twiml("We'd love to hear your thoughts! 📝\n\nPlease send us your feedback via text or simply send us a voice note.")
             try:
                 from backend.db import supabase_client
                 logger.info(f"Writing feedback for {from_number}")
