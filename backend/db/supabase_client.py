@@ -195,6 +195,26 @@ def set_consent(
     return updated.data[0]
 
 
+def set_account_id(
+    phone_number: str,
+    rr_number: str,
+    *,
+    client: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Store the user's Account ID (RR Number) into their profile."""
+    c = client or init_client()
+    get_or_create_user(phone_number, client=c)
+    updated = (
+        c.table("users")
+        .update({"rr_number": rr_number})
+        .eq("phone_number", phone_number)
+        .execute()
+    )
+    if not updated.data:
+        raise RuntimeError(f"failed to set account id for {phone_number!r}")
+    return updated.data[0]
+
+
 def write_bill(
     user_id: str,
     extraction: BillExtraction,

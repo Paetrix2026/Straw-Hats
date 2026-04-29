@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS users (
     -- 'en' | 'kn' | NULL (NULL = not yet detected/persisted; defaults to
     -- English at render time per output/response_composer.py).
     language_preference TEXT DEFAULT NULL CHECK (language_preference IN ('en', 'kn')),
+    
+    -- Added for account ID linking (daily automation scraping)
+    rr_number TEXT,
+    
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 

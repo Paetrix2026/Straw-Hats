@@ -53,6 +53,7 @@ FOLLOWUP_KEYWORDS = frozenset({"SOLAR", "FIXED", "SUBSIDY", "CLIFF"})
 FOLLOWUP_LIMIT = 2
 
 _FEEDBACK_WAITING = set()
+_ACCOUNT_ID_WAITING = set()
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,28 @@ def create_app(*, validate_env: bool = True) -> Flask:
             return _twiml(resp.message)
 
         # --- Consented user ----------------------------------------------------
+
+        # Account ID linking flow
+        if command == "ACCOUNT":
+            _ACCOUNT_ID_WAITING.add(from_number)
+            return _twiml("Please reply with your MESCOM Account ID (RR Number). E.g. RR123456")
+            
+        if from_number in _ACCOUNT_ID_WAITING and num_media == 0:
+            rr_number_text = body.strip().upper()
+            _ACCOUNT_ID_WAITING.discard(from_number)
+            try:
+                from backend.db import supabase_client
+                logger.info(f"Linking Account ID {rr_number_text} for {from_number}")
+                supabase_client.set_account_id(
+                    phone_number=from_number,
+                    rr_number=rr_number_text,
+                )
+                return _twiml(f"Success! Your Account ID ({rr_number_text}) has been linked for daily due amount checks.\n\n"
+                              "📸 Now, send a photo of your latest bill for analysis!")
+            except Exception:
+                logger.exception("supabase set_account_id failed")
+                return _twiml("Sorry, we couldn't link your Account ID right now. Please try again later.")
+
         # Feedback flow
         if command == "F" or command == "FEEDBACK":
             _FEEDBACK_WAITING.add(from_number)
