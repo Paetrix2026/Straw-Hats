@@ -167,10 +167,11 @@ def process_bill_and_dispatch(
     if result.status == ExtractionStatus.FAILED:
         return _send(response_composer.compose_bad_photo_response())
 
-    # OK path — analyse + compose.
+    # OK path — analyse + compose. Use the AI-enhanced dispatcher; it falls
+    # back to the templated response on any Groq failure or validation miss.
     try:
         analysis = analyze_bill(result.extraction)
-        message = response_composer.compose_for_result(analysis, language=language)
+        message = response_composer.compose_for_result_ai(analysis, language=language)
     except Exception:  # noqa: BLE001
         logger.exception("analysis/composition error")
         return _send(response_composer.compose_gemini_error_response())
@@ -448,7 +449,12 @@ def _handle_followup(phone_number: str, keyword: str) -> str:
     Does NOT go through the daemon-thread flow — follow-ups are pure
     function calls on already-computed analysis, so we can return them
     inline in the webhook response within milliseconds.
+
+    AI personalization: a single Groq call adds a 1-line context tailored
+    to the user's bill. Failures degrade silently to template-only output.
     """
+    from backend.output import ai_composer
+
     cached = last_bill_cache.get_last_bill(phone_number)
     if cached is None:
         return compose_no_recent_bill_response()
@@ -463,7 +469,16 @@ def _handle_followup(phone_number: str, keyword: str) -> str:
         "CLIFF": compose_cliff_followup,
     }
     composer = composer_map[keyword]
-    text = composer(cached["extraction"], cached["analysis"])
+    extraction = cached["extraction"]
+    analysis = cached["analysis"]
+
+    try:
+        ai_line = ai_composer.compose_followup_line(keyword, extraction, analysis)
+    except Exception:  # noqa: BLE001 — AI failures must never block the reply
+        logger.exception("ai followup line failed; falling back to template")
+        ai_line = None
+
+    text = composer(extraction, analysis, ai_line=ai_line)
     last_bill_cache.increment_follow_up(phone_number)
     return text
 

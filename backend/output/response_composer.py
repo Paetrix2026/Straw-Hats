@@ -12,7 +12,8 @@ generic "Gemini choked" case into PRD §2.4 text.
 """
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Optional, TYPE_CHECKING
 
 from datetime import date
 
@@ -25,6 +26,11 @@ from backend.analysis.load_inference import infer_dominant_load
 from backend.analysis.models import BillExtraction
 from backend.analysis.orchestrator import AnalysisResult
 from backend.analysis.subsidy_navigator import GJReport, GJWarning
+
+if TYPE_CHECKING:
+    from backend.output.ai_composer import AILines, AIFollowupLine
+
+logger = logging.getLogger(__name__)
 
 WHATSAPP_MESSAGE_LIMIT = 1600
 
@@ -64,7 +70,11 @@ _CLIFF_PRECEDENCE = (
 # =============================================================================
 
 
-def compose_non_gj_response(result: AnalysisResult) -> str:
+def compose_non_gj_response(
+    result: AnalysisResult,
+    *,
+    ai_lines: Optional["AILines"] = None,
+) -> str:
     ext = result.extraction
     roi = result.solar_roi
     fct = result.fct
@@ -109,6 +119,9 @@ def compose_non_gj_response(result: AnalysisResult) -> str:
     load_section = _compose_dominant_load_section(ext)
     solar_climate_line = _compose_solar_climate_line(roi.system_kw)
 
+    headline_section = f"{ai_lines.headline}\n\n" if ai_lines else ""
+    priority_section = f"{ai_lines.priority}\n\n" if ai_lines else ""
+
     return (
         "📊 VidyutMitra Bill Report\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -116,6 +129,7 @@ def compose_non_gj_response(result: AnalysisResult) -> str:
         f"⚡ Units consumed: {ext.units_consumed}\n"
         f"🔌 Sanctioned load: {ext.sanctioned_load_kw:.0f} kW\n"
         f"💰 Total bill: Rs. {result.net_bill_amount:,.0f}\n\n"
+        f"{headline_section}"
         "━━ Bill Verification ━━\n"
         f"✅ Energy charges match KERC tariff\n"
         f"   ({ext.units_consumed} units × Rs. 5.80 flat rate)\n\n"
@@ -134,6 +148,7 @@ def compose_non_gj_response(result: AnalysisResult) -> str:
         f"🌱 CO2 offset: {roi.co2_offset_tonnes_per_year:.2f} tonnes/year\n\n"
         f"{solar_climate_line}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{priority_section}"
         "Reply:\n"
         "1️⃣ SOLAR — detailed solar breakdown\n"
         "2️⃣ FIXED — explain my fixed charges\n"
@@ -146,7 +161,11 @@ def compose_non_gj_response(result: AnalysisResult) -> str:
 # =============================================================================
 
 
-def compose_gj_response(result: AnalysisResult) -> str:
+def compose_gj_response(
+    result: AnalysisResult,
+    *,
+    ai_lines: Optional["AILines"] = None,
+) -> str:
     ext = result.extraction
     gj = result.gj_visibility
     if gj is None:
@@ -167,6 +186,9 @@ def compose_gj_response(result: AnalysisResult) -> str:
     )
     load_section = _compose_dominant_load_section(ext)
 
+    headline_section = f"{ai_lines.headline}\n\n" if ai_lines else ""
+    priority_section = f"{ai_lines.priority}\n\n" if ai_lines else ""
+
     return (
         "📊 VidyutMitra Bill Report\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -174,6 +196,7 @@ def compose_gj_response(result: AnalysisResult) -> str:
         f"⚡ Units consumed: {ext.units_consumed}\n"
         f"🔌 Sanctioned load: {ext.sanctioned_load_kw:.0f} kW\n"
         f"💰 You paid: Rs. {result.net_bill_amount:,.0f}\n\n"
+        f"{headline_section}"
         "━━ 🎁 Gruha Jyothi Benefit ━━\n"
         "This month the Karnataka government paid "
         f"Rs. {gj.monthly_subsidy_received:,.0f} on your behalf:\n\n"
@@ -196,7 +219,8 @@ def compose_gj_response(result: AnalysisResult) -> str:
         + load_section
         + solar_section
         + "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Reply:\n"
+        + priority_section
+        + "Reply:\n"
         "1️⃣ SUBSIDY — how Gruha Jyothi works\n"
         "2️⃣ CLIFF — what triggers losing subsidy\n"
         "Or send another bill photo anytime."
@@ -450,6 +474,29 @@ def compose_for_result(result: AnalysisResult, *, language: str = "en") -> str:
     return _wrap_with_locale(body, language)
 
 
+def compose_for_result_ai(result: AnalysisResult, *, language: str = "en") -> str:
+    """AI-enhanced dispatcher: try Groq for personalized HEADLINE + PRIORITY,
+    fall back to template-only on any failure.
+
+    Always returns a complete, sendable message. AI failures degrade silently
+    to the existing templated output without any user-visible difference.
+    """
+    from backend.output import ai_composer
+
+    try:
+        ai_lines = ai_composer.compose_main_lines(result)
+    except Exception:  # noqa: BLE001 — never let AI break the user response
+        logger.exception("ai composer raised; falling back to template")
+        ai_lines = None
+
+    body = (
+        compose_gj_response(result, ai_lines=ai_lines)
+        if result.chosen_template == "gj"
+        else compose_non_gj_response(result, ai_lines=ai_lines)
+    )
+    return _wrap_with_locale(body, language)
+
+
 # =============================================================================
 # Follow-up composers — PRD §2.3 (two-turn keyword flow)
 # =============================================================================
@@ -458,6 +505,8 @@ def compose_for_result(result: AnalysisResult, *, language: str = "en") -> str:
 def compose_solar_followup(
     extraction: BillExtraction,
     analysis: AnalysisResult,
+    *,
+    ai_line: Optional["AIFollowupLine"] = None,
 ) -> str:
     """Detailed solar breakdown per PRD §2.3 STEP 4b.
 
@@ -466,9 +515,11 @@ def compose_solar_followup(
     """
     roi = analysis.solar_roi
     units = extraction.units_consumed or 0
+    ai_section = f"{ai_line.context}\n\n" if ai_line else ""
     return (
         "☀️ Solar Eligibility Detail\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ai_section}"
         f"Based on {units} units/month consumption:\n\n"
         f"Recommended system: {roi.system_kw} kW\n"
         f"System cost: Rs. {roi.system_cost:,.0f}\n"
@@ -496,11 +547,14 @@ def compose_solar_followup(
 def compose_fixed_followup(
     extraction: BillExtraction,
     analysis: AnalysisResult,
+    *,
+    ai_line: Optional["AIFollowupLine"] = None,
 ) -> str:
     """Explain Fixed Charges + the Trap, even when it doesn't fire."""
     fct = analysis.fct
     sanctioned = extraction.sanctioned_load_kw or 0
     monthly_fixed = analysis.computed_bill.fixed_charges
+    ai_section = f"{ai_line.context}\n\n" if ai_line else ""
 
     if fct.fires:
         trap_section = (
@@ -525,6 +579,7 @@ def compose_fixed_followup(
     return (
         "⚡ Fixed Charges Explained\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ai_section}"
         f"Your sanctioned load: {sanctioned:.0f} kW\n"
         "Fixed charge rate: Rs. 145/kW/month (KERC Tariff Order 2025)\n"
         f"This month's fixed charges: Rs. {monthly_fixed:,.0f}\n\n"
@@ -539,14 +594,18 @@ def compose_fixed_followup(
 def compose_subsidy_followup(
     extraction: BillExtraction,
     analysis: AnalysisResult,
+    *,
+    ai_line: Optional["AIFollowupLine"] = None,
 ) -> str:
     """Explain Gruha Jyothi mechanics. Only makes sense for GJ beneficiaries."""
     gj = analysis.gj_visibility
+    ai_section = f"{ai_line.context}\n\n" if ai_line else ""
     if gj is None or not gj.is_gj_beneficiary:
         # Non-GJ user hit SUBSIDY — tell them how to enrol.
         return (
             "🏠 Gruha Jyothi Explained\n"
             "━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{ai_section}"
             "Karnataka's Gruha Jyothi scheme covers up to 200 units of "
             "electricity per household per month.\n\n"
             "Your entitlement = average monthly consumption in FY 2022-23 "
@@ -564,6 +623,7 @@ def compose_subsidy_followup(
     return (
         "🏠 Gruha Jyothi Benefit Explained\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ai_section}"
         "How your entitlement is calculated:\n"
         f"  FY 2022-23 avg consumption: {historical:.0f} units\n"
         f"  + 10 flat units (Cabinet rule, Jan 2024)\n"
@@ -590,13 +650,17 @@ def compose_subsidy_followup(
 def compose_cliff_followup(
     extraction: BillExtraction,
     analysis: AnalysisResult,
+    *,
+    ai_line: Optional["AIFollowupLine"] = None,
 ) -> str:
     """Deep-dive on the three GJ cliffs. Personalised with persona numbers."""
     gj = analysis.gj_visibility
+    ai_section = f"{ai_line.context}\n\n" if ai_line else ""
     if gj is None or not gj.is_gj_beneficiary:
         return (
             "🏠 Gruha Jyothi Cliff Warning\n"
             "━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{ai_section}"
             "You're not currently enrolled in Gruha Jyothi, so the "
             "cliffs don't apply to you right now. If you enrol, remember:\n\n"
             "• Cross entitlement → pay for excess units\n"
@@ -634,6 +698,7 @@ def compose_cliff_followup(
     return (
         "⚠️ Gruha Jyothi Three-Level Cliff\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ai_section}"
         "Most beneficiaries only know Cliff #1. #2 and #3 are the "
         "ones that really hurt.\n\n"
         f"Your status: {status}\n\n"
