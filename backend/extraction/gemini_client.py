@@ -139,8 +139,16 @@ def extract_bill(
         response = model.generate_content([prompt, image_part])
     except Exception as e:  # noqa: BLE001 — convert any SDK error to GeminiError
         # google.api_core.exceptions.__str__ has segfaulted on malformed
-        # protobufs — never call str() / repr() on the exception; surface
-        # only the class name so we still get actionable diagnostics.
+        # protobufs — never call str() / repr() on the exception. But e.args[0]
+        # is a plain string (the human-readable message) and is safe to read.
+        # That's where Gemini puts the "Quota exceeded for ... per minute / day"
+        # text we need to identify which limit fired.
+        safe_msg = ""
+        args = getattr(e, "args", None)
+        if args and isinstance(args[0], str):
+            safe_msg = args[0][:300]
+        if safe_msg:
+            logger.warning("Gemini SDK error detail: %s", safe_msg)
         raise GeminiError(
             f"Gemini API call failed: {type(e).__module__}.{type(e).__name__}"
         ) from e
