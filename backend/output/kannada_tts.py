@@ -49,10 +49,17 @@ LANGUAGE_CODE = "kn-IN"
 DEFAULT_VOICE = "neha"
 FALLBACK_VOICE = "priya"
 
-# Audio format: opus (OGG/Opus) plays natively as WhatsApp voice note.
-# Sarvam expects lowercase enum values (wav|mp3|opus); uppercase silently
-# falls back to WAV, which WhatsApp rejects with Twilio error 63021.
-AUDIO_FORMAT = "opus"
+# Audio codec: opus (OGG/Opus) plays natively as WhatsApp voice note.
+# Sarvam's parameter is `output_audio_codec` (NOT `audio_format` — that key
+# is silently ignored and Sarvam returns WAV by default, which WhatsApp
+# rejects with Twilio error 63021). Accepted values: wav, mp3, opus,
+# linear16, mulaw, alaw, flac, aac.
+AUDIO_CODEC = "opus"
+
+# Opus only supports specific sample rates per Sarvam: 8000, 12000, 16000,
+# 24000, 48000 Hz. 24 kHz is the sweet spot for voice intelligibility on
+# WhatsApp's compression.
+OPUS_SAMPLE_RATE = 24000
 
 # Slightly slower pace for clarity over WhatsApp's compression.
 PACE = 0.95
@@ -172,7 +179,8 @@ def synthesize_kannada(
         "target_language_code": LANGUAGE_CODE,
         "speaker": voice,
         "model": SARVAM_MODEL,
-        "audio_format": AUDIO_FORMAT,
+        "output_audio_codec": AUDIO_CODEC,
+        "speech_sample_rate": OPUS_SAMPLE_RATE,
         "pace": PACE,
     }
 
