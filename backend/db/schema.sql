@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     phone_number TEXT UNIQUE NOT NULL,
     consent_given BOOLEAN DEFAULT FALSE NOT NULL,
+    -- 'en' | 'kn' | NULL (NULL = not yet detected/persisted; defaults to
+    -- English at render time per output/response_composer.py).
+    language_preference TEXT DEFAULT NULL CHECK (language_preference IN ('en', 'kn')),
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
 
@@ -23,6 +26,11 @@ CREATE TABLE IF NOT EXISTS users (
     -- locked out both the DEMO-prefixed seed rows and the whatsapp:
     -- prefix form, so the constraint was dropped 2026-04-19.
 );
+
+-- For pre-existing live projects: apply this ALTER once. Idempotent.
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS language_preference TEXT DEFAULT NULL
+    CHECK (language_preference IN ('en', 'kn'));
 
 CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number);
 CREATE INDEX IF NOT EXISTS idx_users_consent ON users(consent_given) WHERE consent_given = TRUE;

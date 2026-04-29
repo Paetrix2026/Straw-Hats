@@ -135,6 +135,37 @@ class TestDispatcher:
         assert "Gruha Jyothi Benefit" in msg
 
 
+class TestLanguageWrapper:
+    """Round-2 localization: intro + footer differ by language; body stays
+    English (KERC numbers + program names don't translate)."""
+
+    def test_default_language_is_english_intro_and_footer(self):
+        r = analyze_bill(_persona_extraction(NIKHIL))
+        msg = compose_for_result(r)
+        assert msg.startswith("Here's your bill analysis:")
+        assert msg.rstrip().endswith(
+            "Reply LANG to switch language / STOP to delete data."
+        )
+
+    def test_kannada_language_swaps_intro_and_footer(self):
+        r = analyze_bill(_persona_extraction(NIKHIL))
+        msg = compose_for_result(r, language="kn")
+        assert msg.startswith("ನಿಮ್ಮ ಬಿಲ್ ವಿಶ್ಲೇಷಣೆ:")
+        assert msg.rstrip().endswith("ಭಾಷೆ ಬದಲಾಯಿಸಲು LANG ಕಳುಹಿಸಿ / ಡೇಟಾ ಅಳಿಸಲು STOP.")
+
+    def test_body_stays_english_in_kannada_mode(self):
+        # KERC tariff lines must stay readable regardless of language pref.
+        r = analyze_bill(_persona_extraction(NIKHIL))
+        msg = compose_for_result(r, language="kn")
+        assert "Fixed Charge Alert" in msg
+        assert "PM Surya Ghar" in msg
+
+    def test_unknown_language_falls_back_to_english(self):
+        r = analyze_bill(_persona_extraction(NIKHIL))
+        msg = compose_for_result(r, language="zz")
+        assert msg.startswith("Here's your bill analysis:")
+
+
 # =============================================================================
 # Error templates
 # =============================================================================

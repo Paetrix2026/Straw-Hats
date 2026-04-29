@@ -28,6 +28,26 @@ from backend.analysis.subsidy_navigator import GJReport, GJWarning
 
 WHATSAPP_MESSAGE_LIMIT = 1600
 
+# Localized header + footer wrapping the (English) bill body. Body stays in
+# English because KERC/MNRE technical terms (Sub-Total-1, kW, PM Surya Ghar)
+# don't translate cleanly and machine translation creates accuracy risk —
+# the voice note already provides a Kannada summary. We localize ONLY the
+# wrapper so users see the language switch land immediately.
+_INTRO_BY_LANG = {
+    "en": "Here's your bill analysis:",
+    "kn": "ನಿಮ್ಮ ಬಿಲ್ ವಿಶ್ಲೇಷಣೆ:",
+}
+_FOOTER_BY_LANG = {
+    "en": "Reply LANG to switch language / STOP to delete data.",
+    "kn": "ಭಾಷೆ ಬದಲಾಯಿಸಲು LANG ಕಳುಹಿಸಿ / ಡೇಟಾ ಅಳಿಸಲು STOP.",
+}
+
+
+def _wrap_with_locale(body: str, language: str) -> str:
+    intro = _INTRO_BY_LANG.get(language, _INTRO_BY_LANG["en"])
+    footer = _FOOTER_BY_LANG.get(language, _FOOTER_BY_LANG["en"])
+    return f"{intro}\n\n{body}\n\n{footer}"
+
 # Cliff precedence — user override of tech spec (Session 3): eligibility >
 # monthly_hard > soft_step > approaching_entitlement. The GJ response only
 # shows the HIGHEST-precedence warning in the cliff section.
@@ -414,11 +434,20 @@ def _month_label(iso_date: Optional[str]) -> str:
 # =============================================================================
 
 
-def compose_for_result(result: AnalysisResult) -> str:
-    """Top-level dispatcher: pick non-GJ vs GJ template."""
-    if result.chosen_template == "gj":
-        return compose_gj_response(result)
-    return compose_non_gj_response(result)
+def compose_for_result(result: AnalysisResult, *, language: str = "en") -> str:
+    """Top-level dispatcher: pick non-GJ vs GJ template, then wrap with the
+    localized intro line and footer per the user's language preference.
+
+    The body remains English (KERC tariff numbers + government program names
+    only render correctly in English; the Kannada voice note carries the
+    summary in-language). ``language`` defaults to ``'en'`` for callers that
+    don't yet pass it (e.g. older tests)."""
+    body = (
+        compose_gj_response(result)
+        if result.chosen_template == "gj"
+        else compose_non_gj_response(result)
+    )
+    return _wrap_with_locale(body, language)
 
 
 # =============================================================================

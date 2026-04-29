@@ -237,16 +237,69 @@ def write_feedback(
     """Persist user feedback (text or voice)."""
     c = client or init_client()
     user = get_or_create_user(phone_number, client=c)
-    
+
     payload = {
         "user_id": user["id"],
         "feedback_text": feedback_text,
-        "audio_url": audio_url
+        "audio_url": audio_url,
     }
     inserted = c.table("feedback").insert(payload).execute()
     if not inserted.data:
         raise RuntimeError("failed to insert feedback row")
     return inserted.data[0]["id"]
+
+
+_VALID_LANGUAGES: frozenset[str] = frozenset({"en", "kn"})
+
+
+def get_language_preference(
+    phone_number: str,
+    *,
+    client: Optional[Any] = None,
+) -> Optional[str]:
+    """Return the persisted ``language_preference`` for a user, or ``None`` if
+    the row doesn't exist or the column is unset."""
+    c = client or init_client()
+    existing = (
+        c.table("users")
+        .select("language_preference")
+        .eq("phone_number", phone_number)
+        .limit(1)
+        .execute()
+    )
+    if not existing.data:
+        return None
+    return existing.data[0].get("language_preference")
+
+
+def set_language_preference(
+    phone_number: str,
+    language: str,
+    *,
+    client: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Persist ``language_preference`` for a user; create the row first if
+    needed (parallels ``set_consent``). Returns the updated row.
+
+    Raises ``ValueError`` for any value outside ``{'en', 'kn'}`` to keep
+    the DB CHECK constraint and the application invariant in lockstep.
+    """
+    if language not in _VALID_LANGUAGES:
+        raise ValueError(
+            f"language_preference must be one of {sorted(_VALID_LANGUAGES)}, "
+            f"got {language!r}"
+        )
+    c = client or init_client()
+    get_or_create_user(phone_number, client=c)
+    updated = (
+        c.table("users")
+        .update({"language_preference": language})
+        .eq("phone_number", phone_number)
+        .execute()
+    )
+    if not updated.data:
+        raise RuntimeError(f"failed to set language_preference for {phone_number!r}")
+    return updated.data[0]
 
 
 def delete_user_cascade(

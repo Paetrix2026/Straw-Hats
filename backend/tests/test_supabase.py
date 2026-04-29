@@ -271,3 +271,47 @@ class TestDeleteCascade:
         existed, count = supabase_client.delete_user_cascade("+910000000000", client=fake_client)
         assert existed is False
         assert count == 0
+
+
+# =============================================================================
+# language_preference get/set
+# =============================================================================
+
+
+class TestLanguagePreference:
+    def test_get_on_unknown_phone_returns_none(self, fake_client):
+        assert supabase_client.get_language_preference(
+            "+910000000000", client=fake_client
+        ) is None
+
+    def test_get_on_user_without_preference_returns_none(self, fake_client):
+        supabase_client.get_or_create_user("+919876543210", client=fake_client)
+        assert supabase_client.get_language_preference(
+            "+919876543210", client=fake_client
+        ) is None
+
+    def test_set_persists_language(self, fake_client):
+        supabase_client.set_language_preference("+919876543210", "kn", client=fake_client)
+        assert supabase_client.get_language_preference(
+            "+919876543210", client=fake_client
+        ) == "kn"
+
+    def test_set_creates_row_if_missing(self, fake_client):
+        # First contact may set language before any other write.
+        supabase_client.set_language_preference("+918887776665", "en", client=fake_client)
+        assert len(fake_client.users) == 1
+        assert fake_client.users[0]["language_preference"] == "en"
+
+    def test_set_can_flip_existing_preference(self, fake_client):
+        supabase_client.set_language_preference("+919876543210", "kn", client=fake_client)
+        supabase_client.set_language_preference("+919876543210", "en", client=fake_client)
+        assert supabase_client.get_language_preference(
+            "+919876543210", client=fake_client
+        ) == "en"
+
+    @pytest.mark.parametrize("bad", ["", "EN", "english", "hi", "ta", None, " kn "])
+    def test_set_rejects_invalid_value(self, fake_client, bad):
+        with pytest.raises(ValueError, match="language_preference"):
+            supabase_client.set_language_preference(
+                "+919876543210", bad, client=fake_client  # type: ignore[arg-type]
+            )

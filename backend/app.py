@@ -31,8 +31,11 @@ from backend.consent.consent_manager import (
     ConsentState,
     check_consent,
     first_contact_response,
+    get_language_preference,
+    handle_language_toggle,
     handle_start_command,
     handle_stop_command,
+    set_language_preference,
     unconsented_media_response,
 )
 from backend.output import last_bill_cache
@@ -94,6 +97,7 @@ def _validate_env(strict: bool = True) -> list[str]:
 def process_bill_and_dispatch(
     from_number: str,
     media_url: str,
+    message_body: str = "",
     *,
     supabase_client_override=None,
     twilio_client_override=None,
@@ -113,8 +117,19 @@ def process_bill_and_dispatch(
     from backend.extraction.twilio_media import TwilioMediaError, fetch_twilio_media
     from backend.analysis.orchestrator import analyze_bill
     from backend.output import response_composer, twilio_dispatcher
+    from backend.output.language_detector import detect_language
     from backend.output.response_composer import split_for_whatsapp
     from backend.db import supabase_client
+
+    # Language preference: prefer persisted, fall back to detection from
+    # the message body, default to English. Persist a freshly-detected
+    # value so subsequent bills don't re-detect.
+    language = get_language_preference(from_number)
+    if language is None and message_body:
+        language = detect_language(message_body)
+        set_language_preference(from_number, language)
+    if language is None:
+        language = "en"
 
     def _send(msg: str) -> str:
         """Dispatch, splitting at section boundaries if the WhatsApp 1600-
@@ -153,7 +168,7 @@ def process_bill_and_dispatch(
     # OK path — analyse + compose.
     try:
         analysis = analyze_bill(result.extraction)
-        message = response_composer.compose_for_result(analysis)
+        message = response_composer.compose_for_result(analysis, language=language)
     except Exception:  # noqa: BLE001
         logger.exception("analysis/composition error")
         return _send(response_composer.compose_gemini_error_response())
@@ -290,6 +305,13 @@ def create_app(*, validate_env: bool = True) -> Flask:
             resp = handle_stop_command(from_number)
             return _twiml(resp.message)
 
+        # LANG / LANGUAGE — toggles persisted preference. Comes AFTER STOP
+        # (so STOP still wins on a "STOP LANG" race) but BEFORE the consent
+        # gate so an awaiting-consent user can flip the language too.
+        if command in ("LANG", "LANGUAGE"):
+            resp = handle_language_toggle(from_number)
+            return _twiml(resp.message)
+
         if command == "START":
             resp = handle_start_command(from_number)
             return _twiml(resp.message)
@@ -300,7 +322,7 @@ def create_app(*, validate_env: bool = True) -> Flask:
             if num_media > 0:
                 resp = unconsented_media_response()
             else:
-                resp = first_contact_response(from_number)
+                resp = first_contact_response(from_number, body)
             return _twiml(resp.message)
 
         # --- Consented user ----------------------------------------------------
@@ -342,7 +364,7 @@ def create_app(*, validate_env: bool = True) -> Flask:
             # the webhook window.
             thread = threading.Thread(
                 target=_process_bill_with_error_isolation,
-                args=(from_number, media_url),
+                args=(from_number, media_url, body),
                 daemon=True,
             )
             thread.start()
@@ -416,12 +438,14 @@ def _handle_followup(phone_number: str, keyword: str) -> str:
     return text
 
 
-def _process_bill_with_error_isolation(from_number: str, media_url: str) -> None:
+def _process_bill_with_error_isolation(
+    from_number: str, media_url: str, message_body: str = ""
+) -> None:
     """Thread target — catches anything ``process_bill_and_dispatch`` missed
     so a stray exception never kills the worker thread silently.
     """
     try:
-        process_bill_and_dispatch(from_number, media_url)
+        process_bill_and_dispatch(from_number, media_url, message_body)
     except Exception:  # noqa: BLE001
         logger.exception(
             "process_bill_and_dispatch thread crashed for %s", from_number

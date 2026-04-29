@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # This keeps START/STOP and consent gating usable for local demos.
 _LOCAL_CONSENT: dict[str, ConsentState] = {}
 
+# Same fallback for language preference. Cleared on STOP alongside _LOCAL_CONSENT.
+_LOCAL_LANGUAGE: dict[str, str] = {}
+
 
 class ConsentState(str, Enum):
     NEVER_CONTACTED = "never_contacted"
@@ -96,6 +99,21 @@ UNCONSENTED_MEDIA_TEMPLATE = (
     "I need your consent before analyzing bills. Please reply START to "
     "accept the privacy terms, or STOP to opt out.\n\n"
     "ದಯವಿಟ್ಟು START ಕಳುಹಿಸಿ."
+)
+
+# Confirmation messages shown after a LANG toggle. The body is in the NEW
+# language so the user immediately sees the switch land. Footer mirrors the
+# response_composer footer so the user always knows how to switch / opt out.
+LANG_SET_TO_KN_TEMPLATE = (
+    "✅ ಭಾಷೆಯನ್ನು ಕನ್ನಡಕ್ಕೆ ಬದಲಾಯಿಸಲಾಗಿದೆ.\n\n"
+    "📸 ನಿಮ್ಮ MESCOM ವಿದ್ಯುತ್ ಬಿಲ್ ಫೋಟೋ ಕಳುಹಿಸಿ ವಿಶ್ಲೇಷಣೆ ಪಡೆಯಲು.\n\n"
+    "Reply LANG to switch / STOP to delete data."
+)
+
+LANG_SET_TO_EN_TEMPLATE = (
+    "✅ Language switched to English.\n\n"
+    "📸 Send a MESCOM bill photo to get an analysis.\n\n"
+    "Reply LANG to switch / STOP to delete data."
 )
 
 # =============================================================================
@@ -208,6 +226,7 @@ def handle_stop_command(
         )
 
     _LOCAL_CONSENT.pop(phone_number, None)
+    _LOCAL_LANGUAGE.pop(phone_number, None)
 
     if prior_state is ConsentState.CONSENTED and existed:
         message = STOP_CONSENTED_TEMPLATE.format(
@@ -226,6 +245,7 @@ def handle_stop_command(
 
 def first_contact_response(
     phone_number: str,
+    message_body: str = "",
     *,
     client: Optional[Any] = None,
 ) -> ConsentResponse:
@@ -233,7 +253,18 @@ def first_contact_response(
 
     Ensures the placeholder user row exists so follow-up STOP can delete it.
     Never processes media — the image is not fetched from Twilio.
+
+    If ``message_body`` is provided, detects the language from it and
+    persists the preference. This is best-effort — a Supabase outage falls
+    back to the in-memory consent map and skips persistence; the next
+    response will re-detect.
     """
+    # Late import to avoid a top-level cycle (output package imports consent
+    # for STOP cleanup of the follow-up cache).
+    from backend.output.language_detector import detect_language
+
+    detected_lang = detect_language(message_body) if message_body else None
+
     try:
         c = client or supabase_client.init_client()
         supabase_client.get_or_create_user(phone_number, client=c)
@@ -244,12 +275,94 @@ def first_contact_response(
             exc,
         )
         _LOCAL_CONSENT[phone_number] = ConsentState.AWAITING_CONSENT
+        c = None
+    # Persist language separately so a Supabase outage on the user-row write
+    # doesn't suppress the (still useful) in-memory language hint.
+    if detected_lang is not None:
+        set_language_preference(phone_number, detected_lang, client=c)
 
     return ConsentResponse(
         state=ConsentState.AWAITING_CONSENT,
         message=FIRST_CONTACT_TEMPLATE,
         allow_processing=False,
     )
+
+
+def handle_language_toggle(
+    phone_number: str,
+    *,
+    client: Optional[Any] = None,
+) -> ConsentResponse:
+    """User sent LANG / LANGUAGE — flip persisted preference and confirm in
+    the NEW language.
+
+    If the user has no row yet (NEVER_CONTACTED), route to first_contact_
+    response so they hit the consent flow first. The language switch happens
+    against an unconsented placeholder otherwise, which is fine — the row
+    exists for STOP to delete, and the toggle still works.
+    """
+    from backend.output.language_detector import LANG_KN, toggle_language
+
+    state = check_consent(phone_number, client=client)
+    if state is ConsentState.NEVER_CONTACTED:
+        return first_contact_response(phone_number, client=client)
+
+    current = get_language_preference(phone_number, client=client)
+    new_lang = toggle_language(current)
+    set_language_preference(phone_number, new_lang, client=client)
+
+    msg = LANG_SET_TO_KN_TEMPLATE if new_lang == LANG_KN else LANG_SET_TO_EN_TEMPLATE
+    return ConsentResponse(
+        state=state,
+        message=msg,
+        # LANG never gates downstream processing; if the user is consented,
+        # they remain consented and can keep sending bills.
+        allow_processing=(state is ConsentState.CONSENTED),
+    )
+
+
+# Public read used by the webhook (process_bill_and_dispatch) to localise
+# the response. Returns the persisted preference, falling back to the
+# in-memory map when Supabase is unreachable, then ``None`` if neither has
+# a value (caller should default to English).
+def get_language_preference(
+    phone_number: str,
+    *,
+    client: Optional[Any] = None,
+) -> Optional[str]:
+    """Return persisted language for a user, or in-memory fallback, or None."""
+    try:
+        return supabase_client.get_language_preference(phone_number, client=client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "get_language_preference falling back to in-memory for %s: %s",
+            phone_number,
+            exc,
+        )
+        return _LOCAL_LANGUAGE.get(phone_number)
+
+
+def set_language_preference(
+    phone_number: str,
+    language: str,
+    *,
+    client: Optional[Any] = None,
+) -> None:
+    """Persist language; fall back to in-memory map on Supabase outage so
+    subsequent reads in this process see the same value."""
+    try:
+        supabase_client.set_language_preference(phone_number, language, client=client)
+    except ValueError:
+        # Validation error — propagate; this is a programmer bug, not a
+        # transient outage.
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "set_language_preference falling back to in-memory for %s: %s",
+            phone_number,
+            exc,
+        )
+        _LOCAL_LANGUAGE[phone_number] = language
 
 
 def unconsented_media_response() -> ConsentResponse:
