@@ -151,7 +151,7 @@ graph TB
 
 ### Internal Modules
 
-| Module | Role |
+| module | role |
 |---|---|
 | `extraction/` | Gemini client, schema validator (R1–R9), retry pipeline, demo fallbacks |
 | `analysis/` | Tariff Engine (FCT detection), Subsidy Navigator (PMSG/GJ/SWH), Solar ROI, Climate Context, Load Inference |
@@ -159,7 +159,7 @@ graph TB
 | `consent/` | DPDPA-compliant consent gate (START/STOP/LANG), language detection + persistence |
 | `db/` | Supabase client (init + get_or_create_user + write_bill + write_feedback + set_account_id) |
 | `automation/` | Daily MESCOM rural-portal scraper + Twilio reminder dispatch |
-| `admin_api.py` | Streamlit-style admin dashboard endpoints |
+| `admin_api.py` | Next.js based admin dashboard endpoints |
 
 ## Quick Start
 
