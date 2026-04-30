@@ -455,7 +455,7 @@ function WhatsAppMockup({ messages }: { messages: Array<{ from: string; text: st
                             ) : msg.isImage ? (
                                 <div className="wa-img-placeholder">
                                     <div className="wa-img-icon">{msg.text.includes('Aadhaar') ? '📄' : msg.text.includes('Selfie') || msg.text.includes('selfie') ? '📸' : '🖼️'}</div>
-                                    <span>{msg.text.replace(/[📷🤳] /, '')}</span>
+                                    <span>{msg.text.replace(/[\u{1F4F7}\u{1F933}] /u, '')}</span>
                                 </div>
                             ) : msg.isVoice ? (
                                 <div className="wa-voice-bubble">
@@ -862,24 +862,22 @@ export default function LandingPage(): React.ReactElement {
 
                 <div className="hero-ribbon-banner">
                     <div className="ribbon-content">
-                        <span>India's First AI Energy Advisor for MESCOM Households</span>
+                        <span>Built on KERC FY26 tariffs · DPDPA-compliant · Kannada-first</span>
                     </div>
                 </div>
 
                 <h1 className="hero-headline">
-                     AI Energy Advisor<br/>for MESCOM Bills
+                    <span className="font-bold whitespace-nowrap block">ನಿಮ್ಮ ವಿದ್ಯುತ್ ಬಿಲ್, ಸರಳವಾಗಿ.</span>
+                    <span className="block text-[0.85em] font-medium text-slate-800 mt-2 mb-6">Your electricity bill, simplified.</span>
                 </h1>
 
-                <p className="hero-sub">
-                    Analyze your electricity bills, discover hidden subsidies, and calculate solar ROI.<br />
-                    Powered by Gemini AI & real KERC tariff data.<br />
-                    Get savings recommendations instantly on WhatsApp.
-                </p>
-
-
+                <div className="hero-sub space-y-2 mb-10">
+                    <p className="text-slate-600">Built on KERC FY26 tariffs · DPDPA-compliant · Kannada-first</p>
+                    <p className="text-sm text-slate-500">Built Into Whatsapp, Zero Friction!</p>
+                </div>
 
                 <div className="hero-cta-wrapper">
-                    <Link href="/dashboard" className="hero-cta-ornate">
+                    <Link href="/chat" className="hero-cta-ornate">
                         <div className="cta-content">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="cta-icon">
                                 <path d="M5 21v-8M12 21V9M19 21v-8M3 21h18M8 21v-5M16 21v-5M5 6l7-3 7 3" />
@@ -1012,7 +1010,7 @@ export default function LandingPage(): React.ReactElement {
                                 <h4>Resources</h4>
                                 <ul>
                                     <li><a href="#about">About the Mission</a></li>
-                                    <li><a href="https://github.com/AbdulWasih05/AI-for-Bharat" target="_blank" rel="noopener noreferrer">GitHub Repo</a></li>
+                                    <li><a href="https://github.com/Paetrix2026/Straw-Hats" target="_blank" rel="noopener noreferrer">GitHub Repo</a></li>
                                     <li><a href="https://aws.amazon.com" target="_blank" rel="noopener noreferrer">Powered by AWS</a></li>
                                 </ul>
                             </div>
@@ -1028,7 +1026,7 @@ export default function LandingPage(): React.ReactElement {
                                         </a>
                                     </li>
                                     <li>
-                                        <a href="https://github.com/AbdulWasih05/AI-for-Bharat" target="_blank" rel="noopener noreferrer" className="footer-link-icon">
+                                        <a href="https://github.com/Paetrix2026/Straw-Hats" target="_blank" rel="noopener noreferrer" className="footer-link-icon">
                                             <GithubIcon />
                                             GitHub
                                         </a>
@@ -1045,7 +1043,7 @@ export default function LandingPage(): React.ReactElement {
                                 <span className="footer-dot"></span>
                                 <a href="#about">About</a>
                                 <span className="footer-dot"></span>
-                                <a href="https://github.com/AbdulWasih05/AI-for-Bharat" target="_blank" rel="noopener noreferrer">Source</a>
+                                <a href="https://github.com/Paetrix2026/Straw-Hats" target="_blank" rel="noopener noreferrer">Source</a>
                             </div>
                         </div>
                     </div>
