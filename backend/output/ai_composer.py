@@ -66,6 +66,12 @@ _MAIN_SYSTEM_PROMPT = (
     "  • High consumption + solar-eligible → SOLAR\n"
     "  • FCT fires + lower consumption → FIXED\n"
     "  • GJ-eligible not enrolled with no FCT/solar → SUBSIDY\n\n"
+    "GJ buffer semantics (when fact-pack contains buf + bk):\n"
+    "- bk=\"soft\": user is approaching personal entitlement. Crossing = pay\n"
+    "  standard tariff on excess units (subsidy still applies to the rest).\n"
+    "- bk=\"hard\": user is approaching the 200-unit MESCOM cap. Crossing =\n"
+    "  lose the ENTIRE month's subsidy. Use stronger language for hard.\n"
+    "- bk=\"past\": user has already crossed 200; full bill is payable.\n\n"
     "Examples:\n\n"
     'Input: {"u":210,"l":3,"b":1943,"fc":1,"fa":1740,"fm":145,"se":1,"sm":2100,"sp":3.8}\n'
     'Output: {"headline":"👉 You\'re paying Rs. 1,740/year extra in fixed charges.",'
@@ -73,9 +79,12 @@ _MAIN_SYSTEM_PROMPT = (
     'Input: {"u":280,"l":3,"b":2446,"fc":1,"fa":1740,"se":1,"sm":2400,"sp":3.4}\n'
     'Output: {"headline":"👉 Solar saves Rs. 2,400/month. Payback in 3.4 years.",'
     '"priority":"🎯 Start with: SOLAR\\n   (biggest lever for your usage)"}\n\n'
-    'Input: {"u":110,"l":2,"b":0,"g":1,"ge":1,"ent":115,"uPct":96,"warn":"approaching","subM":1080.02,"buf":5}\n'
-    'Output: {"headline":"🚨 You\'re 5 units from losing subsidy on excess.",'
-    '"priority":"🎯 Start with: CLIFF\\n   (summer survival tactics)"}'
+    'Input: {"u":110,"l":2,"b":0,"g":1,"ge":1,"ent":115,"uPct":96,"warn":"approaching","subM":1080.02,"buf":5,"bk":"soft"}\n'
+    'Output: {"headline":"🚨 You\'re 5 units from paying for excess.",'
+    '"priority":"🎯 Start with: CLIFF\\n   (summer survival tactics)"}\n\n'
+    'Input: {"u":170,"l":1,"b":331,"g":1,"ge":1,"ent":123,"uPct":138,"warn":"monthly_hard","subM":1012.4,"buf":30,"bk":"hard"}\n'
+    'Output: {"headline":"🚨 30 units from losing entire Rs. 1,012.4 subsidy.",'
+    '"priority":"🎯 Start with: CLIFF\\n   (don\'t cross 200 this month)"}'
 )
 
 
@@ -160,8 +169,28 @@ def build_main_factpack(result: AnalysisResult) -> dict[str, Any]:
         pack["ent"] = ent
         pack["uPct"] = int(round(gj.entitlement_utilization_pct or 0))
         pack["subM"] = round(gj.monthly_subsidy_received or 0, 2)
-        if ent > 0:
-            pack["buf"] = max(0, ent - (ext.units_consumed or 0))
+
+        # buf = distance to the closest pending cliff (Option A semantics).
+        # Cliff 1 (soft step): personal entitlement. Crossing = pay standard
+        #   tariff for excess units, but keep the rest subsidized.
+        # Cliff 2 (monthly hard): 200-unit MESCOM cap. Crossing = lose the
+        #   ENTIRE month's subsidy.
+        # We report whichever positive distance is SMALLER (most imminent),
+        # tagging the kind so the AI can phrase appropriately. If Cliff 1 is
+        # already crossed but Cliff 2 isn't, we report Cliff 2.
+        units = ext.units_consumed or 0
+        buf_to_ent = ent - units if ent > 0 else None      # may be negative
+        buf_to_200 = 200 - units                            # may be negative
+        if buf_to_ent is not None and buf_to_ent > 0 and buf_to_ent <= buf_to_200:
+            pack["buf"] = buf_to_ent
+            pack["bk"] = "soft"     # next cliff is the soft step
+        elif buf_to_200 > 0:
+            pack["buf"] = buf_to_200
+            pack["bk"] = "hard"     # next cliff is the 200-unit hard cap
+        else:
+            pack["buf"] = 0
+            pack["bk"] = "past"     # already over 200 — full subsidy lost
+
         # Highest-precedence cliff warning, if any.
         from backend.output.response_composer import _pick_highest_precedence_warning
         top = _pick_highest_precedence_warning(gj.warnings)
@@ -210,7 +239,11 @@ def build_followup_factpack(
 
 _NUMBER_TOKEN_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # Trivial values that carry no factual claim (counts, list indices, etc.).
-_TRIVIAL_NUMBERS = {"0", "1", "2", "3", "4", "5", "10", "12"}
+# NOTE: "0" is NOT in this set — it's a factual claim ("0 unit buffer",
+# "Rs. 0 paid") and the AI has been observed hallucinating it. If the
+# fact-pack genuinely contains 0, the value is exposed via _factpack_numbers
+# and the AI's "0" passes validation; otherwise the AI is rejected.
+_TRIVIAL_NUMBERS = {"1", "2", "3", "4", "5", "10", "12"}
 
 
 def _normalize(s: str) -> str:

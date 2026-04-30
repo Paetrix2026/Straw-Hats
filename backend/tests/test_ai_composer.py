@@ -106,7 +106,10 @@ class TestFactPackPriya:
         assert pack["uPct"] == 96
 
     def test_buffer_is_5_units(self, pack):
+        # Priya at 110/115 — soft step is closer (5 units to entitlement)
+        # than the 200-unit hard cap (90 units away).
         assert pack["buf"] == 5
+        assert pack["bk"] == "soft"
 
     def test_approaching_warning_present(self, pack):
         # Level 0 fires for Priya; CLAUDE.md flags this as load-bearing for
@@ -116,6 +119,51 @@ class TestFactPackPriya:
     def test_fct_does_not_fire(self, pack):
         # 2 kW sanctioned, peak under threshold — FCT must not fire.
         assert "fc" not in pack
+
+
+class TestBufClosestCliff:
+    """Option A: buf reports the SMALLEST positive distance to a pending cliff,
+    tagged with bk ('soft' = personal entitlement, 'hard' = 200-cap, 'past' =
+    already over 200). This avoids the headline/template contradiction where
+    one section talked about Cliff 1 and the other about Cliff 2."""
+
+    def _build_factpack(self, units, entitlement):
+        ext = BillExtraction(
+            is_mescom_bill=True, tariff_category='LT-1',
+            billing_period_end='2026-03-15', billing_period_days=30,
+            sanctioned_load_kw=2.0, units_consumed=units,
+            subtotal_1_before_subsidy=1000.0, net_bill_amount=0.0,
+            is_gruha_jyothi_beneficiary=True,
+            historical_avg_baseline=entitlement - 10,
+            entitlement_units=entitlement,
+            gruha_jyothi_subsidy_amount=1000.0,
+            gjs_registration_date='2023-08-26',
+        )
+        return build_main_factpack(analyze_bill(ext))
+
+    def test_below_entitlement_picks_soft(self):
+        # 110 units, entitlement 115 → buf_soft=5, buf_hard=90 → soft wins
+        pack = self._build_factpack(units=110, entitlement=115)
+        assert pack["buf"] == 5
+        assert pack["bk"] == "soft"
+
+    def test_above_entitlement_below_200_picks_hard(self):
+        # 170 units, entitlement 123 → soft already crossed (-47), hard=30 → hard wins
+        pack = self._build_factpack(units=170, entitlement=123)
+        assert pack["buf"] == 30
+        assert pack["bk"] == "hard"
+
+    def test_well_below_both_picks_soft_when_smaller(self):
+        # 50 units, entitlement 100 → buf_soft=50, buf_hard=150 → soft is closer
+        pack = self._build_factpack(units=50, entitlement=100)
+        assert pack["buf"] == 50
+        assert pack["bk"] == "soft"
+
+    def test_above_both_reports_past(self):
+        # 250 units, entitlement 123 → both crossed → past
+        pack = self._build_factpack(units=250, entitlement=123)
+        assert pack["buf"] == 0
+        assert pack["bk"] == "past"
 
 
 class TestFactPackSunita:
@@ -173,6 +221,20 @@ class TestValidator:
         # subM = 1080.02 — AI may write "Rs. 1,080" (floor). Allow.
         pack = {"subM": 1080.02}
         text = "👉 Subsidy: Rs. 1,080 this month."
+        assert validate_ai_output(text, pack) is True
+
+    def test_rejects_fabricated_zero(self):
+        """Regression: AI was hallucinating "0 unit buffer" when buf was 30.
+        '0' used to be in the trivial-numbers whitelist; removing it forces
+        the AI to use real factpack values for zero claims too."""
+        pack = {"u": 170, "ent": 200, "buf": 30}  # 30 buffer remaining
+        text = "🚨 0 unit buffer — subsidy at risk!"
+        assert validate_ai_output(text, pack) is False
+
+    def test_accepts_zero_when_factpack_has_zero(self):
+        """Priya-class users have b=0 (zero net bill). AI saying "Rs. 0" must pass."""
+        pack = {"u": 110, "b": 0, "subM": 1080.02}
+        text = "👉 Rs. 0 paid this month — Karnataka covered Rs. 1,080.02."
         assert validate_ai_output(text, pack) is True
 
 
