@@ -122,13 +122,17 @@ def compose_non_gj_response(
     headline_section = f"{ai_lines.headline}\n\n" if ai_lines else ""
     priority_section = f"{ai_lines.priority}\n\n" if ai_lines else ""
 
+    # Show what's printed on the bill, not the canonical recompute. Bill totals
+    # can include arrears/adjustments the recompute doesn't model.
+    paid_extracted = ext.net_bill_amount if ext.net_bill_amount is not None else result.net_bill_amount
+
     return (
         "📊 VidyutMitra Bill Report\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📅 Period: {month_label}\n"
         f"⚡ Units consumed: {ext.units_consumed}\n"
         f"🔌 Sanctioned load: {ext.sanctioned_load_kw:.0f} kW\n"
-        f"💰 Total bill: Rs. {result.net_bill_amount:,.0f}\n\n"
+        f"💰 Total bill: Rs. {paid_extracted:,.0f}\n\n"
         f"{headline_section}"
         "━━ Bill Verification ━━\n"
         f"✅ Energy charges match KERC tariff\n"
@@ -173,9 +177,22 @@ def compose_gj_response(
 
     cliff_section = _compose_cliff_section(gj, ext)
 
-    # Energy + fixed + taxes breakdown uses the computed values.
-    bill = result.computed_bill
-    taxes = round(bill.pg_surcharge + bill.electricity_tax + bill.fppca, 2)
+    # Display the EXTRACTED values from the bill, not the canonical recompute.
+    # FPPCA is variable monthly and the canonical Rs. 0.50/unit is only an
+    # approximation; same for electricity_tax which uses bill-specific rounding.
+    # Showing extracted values means the line items match what's printed on the
+    # user's bill. The canonical recompute is still used by analysis modules
+    # (FCT, solar ROI) where consistent baselines matter.
+    energy_extracted = ext.energy_charges or 0.0
+    fixed_extracted = ext.fixed_charges or 0.0
+    taxes = round(
+        (ext.pg_surcharge or 0.0)
+        + (ext.electricity_tax or 0.0)
+        + (ext.fppca or 0.0)
+        + (ext.other_charges or 0.0),
+        2,
+    )
+    paid_extracted = ext.net_bill_amount if ext.net_bill_amount is not None else result.net_bill_amount
     month_label = _month_label(ext.billing_period_end)
 
     solar_section = _compose_gj_solar_section(result)
@@ -195,13 +212,13 @@ def compose_gj_response(
         f"📅 Period: {month_label}\n"
         f"⚡ Units consumed: {ext.units_consumed}\n"
         f"🔌 Sanctioned load: {ext.sanctioned_load_kw:.0f} kW\n"
-        f"💰 You paid: Rs. {result.net_bill_amount:,.0f}\n\n"
+        f"💰 You paid: Rs. {paid_extracted:,.0f}\n\n"
         f"{headline_section}"
         "━━ 🎁 Gruha Jyothi Benefit ━━\n"
         "This month the Karnataka government paid "
         f"Rs. {gj.monthly_subsidy_received:,.0f} on your behalf:\n\n"
-        f"   Energy charges:    Rs. {bill.energy_charges:,.0f}\n"
-        f"   Fixed charges:     Rs. {bill.fixed_charges:,.0f}\n"
+        f"   Energy charges:    Rs. {energy_extracted:,.0f}\n"
+        f"   Fixed charges:     Rs. {fixed_extracted:,.0f}\n"
         f"   Taxes & surcharges: Rs. {taxes:,.0f}\n"
         "   ━━━━━━━━━━━━━━━━━━━\n"
         f"   Subsidy received:  Rs. {gj.monthly_subsidy_received:,.0f}\n\n"
