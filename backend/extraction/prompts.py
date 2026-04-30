@@ -54,13 +54,24 @@ NET BILL:
 - arrears (float): Arrears in Rs., 0.0 if none.
 
 RULES:
-1. If a field is not visible or unreadable, set it to null. Do not guess.
+1. DO NOT GUESS. If a digit, field, or value is not clearly readable in the image, set it to null. A null is always preferred to a confidently-wrong number. The downstream system tolerates nulls but cannot recover from a fabricated value that looks plausible.
 2. Amounts are in Indian Rupees. Do not include currency symbols in numeric fields.
 3. Dates may be in DD/MM/YYYY format on the bill - always convert to ISO YYYY-MM-DD.
 4. Bills contain Kannada text; extract numeric values regardless of language.
 5. If not a MESCOM bill, set is_mescom_bill to false and other fields to null.
 6. For GJ bills: the number after "Bill for Consumed Units" / "Sub-Total-1" is pre-subsidy. The number after "Gruha Jyothi Subsidy" / "Sub-Total-2" is the subsidy. "Current Bill Amt" or "Net Bill Amt" is what the consumer pays.
-7. CRITICAL OCR HINTS: Be extremely careful with similar digits (like 5 vs 8, 1 vs 7, 0 vs 6) often found in low-quality bill photos. Double-check the math (e.g. `current_reading - previous_reading == units_consumed`) to verify your extraction is correct.
+7. CRITICAL OCR HINTS: Visually similar digits cause silent errors. Pay extra attention to:
+   - 5 vs 6 vs 8 (round shapes)
+   - 1 vs 7 (vertical strokes)
+   - 0 vs 6 vs 9 (closed loops)
+   - 3 vs 8 (curves)
+   When you read a number, sanity-check it against the printed amounts elsewhere on the bill (totals, subtotals). If a digit looks ambiguous, prefer null over a guess.
+8. CROSS-CHECK YOUR EXTRACTION before returning:
+   - current_reading - previous_reading must equal units_consumed (exactly)
+   - For LT-1 domestic bills: units_consumed × 5.80 should equal energy_charges (within Rs. 5)
+   - subtotal_1_before_subsidy must equal the sum of energy_charges + fixed_charges + pg_surcharge + electricity_tax + fppca + other_charges (within Rs. 5)
+   - For GJ bills: subtotal_1_before_subsidy - gruha_jyothi_subsidy_amount must equal net_bill_amount (within Rs. 5)
+   If any of these don't reconcile, you have misread a digit — re-examine the image and correct the offending field, or set it to null if you cannot read it confidently.
 
 Return ONLY the JSON object."""
 
