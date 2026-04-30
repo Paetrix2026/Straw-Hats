@@ -440,6 +440,188 @@ def create_app(*, validate_env: bool = True) -> Flask:
             "analyze it for you."
         )
 
+    def _corsify(resp_data, status=200):
+        from flask import make_response
+        resp = make_response(jsonify(resp_data), status)
+        req_origin = request.headers.get("Origin") or "http://localhost:3000"
+        resp.headers["Access-Control-Allow-Origin"] = req_origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        return resp
+
+    @app.route("/api/web-chat", methods=["POST", "OPTIONS"])
+    def web_chat():
+        if request.method == "OPTIONS":
+            return _corsify({})
+            
+        from_number = request.form.get("from", "web-user")
+        body = request.form.get("body", "").strip()
+        image_file = request.files.get("image")
+        
+        command = body.upper()
+        
+        # 1. STOP
+        if command == "STOP":
+            resp = handle_stop_command(from_number)
+            return _corsify({"responses": [{"type": "text", "body": resp.message}]})
+            
+        # 2. LANG
+        if command in ("LANG", "LANGUAGE"):
+            resp = handle_language_toggle(from_number)
+            return _corsify({"responses": [{"type": "text", "body": resp.message}]})
+            
+        # 3. START
+        if command == "START":
+            resp = handle_start_command(from_number)
+            return _corsify({"responses": [{"type": "text", "body": resp.message}]})
+            
+        state = check_consent(from_number)
+        if state is not ConsentState.CONSENTED:
+            if image_file:
+                resp = unconsented_media_response()
+            else:
+                resp = first_contact_response(from_number, body)
+            return _corsify({"responses": [{"type": "text", "body": resp.message}]})
+            
+        if command == "ACCOUNT":
+            _ACCOUNT_ID_WAITING.add(from_number)
+            return _corsify({"responses": [{"type": "text", "body": "Please reply with your MESCOM Account ID (RR Number). E.g. RR123456"}]})
+            
+        if from_number in _ACCOUNT_ID_WAITING and not image_file:
+            rr_number_text = body.strip().upper()
+            _ACCOUNT_ID_WAITING.discard(from_number)
+            try:
+                from backend.db import supabase_client
+                supabase_client.set_account_id(
+                    phone_number=from_number,
+                    rr_number=rr_number_text,
+                )
+                return _corsify({"responses": [{"type": "text", "body": f"Success! Your Account ID ({rr_number_text}) has been linked for daily due amount checks.\n\n📸 Now, send a photo of your latest bill for analysis!"}]})
+            except Exception:
+                return _corsify({"responses": [{"type": "text", "body": "Sorry, we couldn't link your Account ID right now. Please try again later."}]})
+
+        # Feedback flow
+        if command == "F" or command == "FEEDBACK":
+            _FEEDBACK_WAITING.add(from_number)
+            return _corsify({"responses": [{"type": "text", "body": "We'd love to hear your thoughts! 📝\n\nPlease send us your feedback via text or simply send us a voice note."}]})
+
+        is_feedback = False
+        feedback_text = None
+        audio_url = None
+
+        if from_number in _FEEDBACK_WAITING and not image_file:
+            is_feedback = True
+            feedback_text = body.strip() or None
+            _FEEDBACK_WAITING.discard(from_number)
+        elif command.startswith("FEEDBACK"):
+            is_feedback = True
+            feedback_text = body[8:].strip() or None
+            _FEEDBACK_WAITING.discard(from_number)
+
+        if is_feedback:
+            if not feedback_text:
+                _FEEDBACK_WAITING.add(from_number)
+                return _corsify({"responses": [{"type": "text", "body": "We'd love to hear your thoughts! 📝\n\nPlease send us your feedback via text or simply send us a voice note."}]})
+            try:
+                from backend.db import supabase_client
+                supabase_client.write_feedback(
+                    phone_number=from_number,
+                    feedback_text=feedback_text,
+                    audio_url=None,
+                )
+                return _corsify({"responses": [{"type": "text", "body": "Thank you for your feedback! 🙏"}]})
+            except Exception:
+                return _corsify({"responses": [{"type": "text", "body": "Sorry, we couldn't save your feedback right now. Please try again later."}]})
+
+        # Followups
+        if command in FOLLOWUP_KEYWORDS:
+            text = _handle_followup(from_number, command)
+            return _corsify({"responses": [{"type": "text", "body": text}]})
+            
+        if not image_file:
+            return _corsify({"responses": [{"type": "text", "body": "📸 Send a photo of your MESCOM electricity bill and I'll analyze it for you."}]})
+            
+        image_bytes = image_file.read()
+        
+        from backend.extraction.gemini_client import GeminiError
+        from backend.extraction.pipeline import run_extraction
+        from backend.analysis.orchestrator import analyze_bill
+        from backend.output import response_composer
+        from backend.output.language_detector import detect_language
+        from backend.output.response_composer import split_for_whatsapp
+        from backend.db import supabase_client
+        from backend.output import kannada_tts, infographic
+        
+        language = get_language_preference(from_number)
+        if language is None and body:
+            language = detect_language(body)
+            set_language_preference(from_number, language)
+        if language is None:
+            language = "en"
+        
+        try:
+            result = run_extraction(image_bytes, phone_number=from_number)
+        except Exception:
+            return _corsify({"responses": [{"type": "text", "body": response_composer.compose_gemini_error_response()}]})
+            
+        if result.status == ExtractionStatus.PRE_APRIL_2025:
+            return _corsify({"responses": [{"type": "text", "body": response_composer.compose_pre_april_2025_response()}]})
+        if result.status == ExtractionStatus.NOT_MESCOM or result.status == ExtractionStatus.FAILED:
+            return _corsify({"responses": [{"type": "text", "body": response_composer.compose_bad_photo_response()}]})
+            
+        try:
+            analysis = analyze_bill(result.extraction)
+            message = response_composer.compose_for_result_ai(analysis, language=language)
+        except Exception:
+            return _corsify({"responses": [{"type": "text", "body": response_composer.compose_gemini_error_response()}]})
+            
+        responses = []
+        for chunk in split_for_whatsapp(message):
+            responses.append({"type": "text", "body": chunk})
+            
+        try:
+            last_bill_cache.set_last_bill(
+                phone_number=from_number,
+                analysis=analysis,
+                extraction=result.extraction,
+                follow_up_count=0,
+            )
+        except Exception:
+            pass
+            
+        import os as _os
+        host_url = request.host_url.rstrip("/")
+        try:
+            text_kannada = response_composer.compose_kannada_voice_summary(result.extraction, analysis)
+            audio_path = kannada_tts.synthesize_to_temp_file(text_kannada)
+            filename = _os.path.basename(audio_path)
+            responses.append({"type": "audio", "url": f"{host_url}/media/{filename}"})
+        except Exception as e:
+            logger.error("web-chat voice note failed: %s", e)
+            
+        try:
+            image_path = infographic.render_to_temp_file(result.extraction, analysis)
+            filename = _os.path.basename(image_path)
+            responses.append({"type": "image", "url": f"{host_url}/media/{filename}"})
+        except Exception as e:
+            logger.error("web-chat infographic failed: %s", e)
+            
+        responses.append({"type": "text", "body": "Help us improve VidyutMitra! 🌟\n\nIf you want to send a feedback, type *FEEDBACK* or *F*."})
+            
+        try:
+            c = supabase_client.init_client()
+            user = supabase_client.get_or_create_user(from_number, client=c)
+            supabase_client.write_bill(
+                user_id=user["id"],
+                extraction=result.extraction,
+                analysis=analysis.to_jsonable(),
+                client=c,
+            )
+        except Exception:
+            pass
+            
+        return _corsify({"responses": responses})
+
     return app
 
 
