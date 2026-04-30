@@ -60,6 +60,7 @@ RULES:
 4. Bills contain Kannada text; extract numeric values regardless of language.
 5. If not a MESCOM bill, set is_mescom_bill to false and other fields to null.
 6. For GJ bills: the number after "Bill for Consumed Units" / "Sub-Total-1" is pre-subsidy. The number after "Gruha Jyothi Subsidy" / "Sub-Total-2" is the subsidy. "Current Bill Amt" or "Net Bill Amt" is what the consumer pays.
+7. CRITICAL OCR HINTS: Be extremely careful with similar digits (like 5 vs 8, 1 vs 7, 0 vs 6) often found in low-quality bill photos. Double-check the math (e.g. `current_reading - previous_reading == units_consumed`) to verify your extraction is correct.
 
 Return ONLY the JSON object."""
 
