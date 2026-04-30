@@ -18,12 +18,19 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from backend.config.tariff_constants import EARLIEST_ACCEPTED_BILL_DATE
+from backend.config.tariff_constants import (
+    EARLIEST_ACCEPTED_BILL_DATE,
+    ENERGY_CHARGE_FLAT_RATE,
+)
 
 
 # Tolerances from tech spec §4.3.
 METER_READING_TOLERANCE_UNITS = 5    # R6
 BILL_MATH_TOLERANCE_RUPEES = 5        # R7, R8
+# R9: tariff sanity. Use the larger of Rs. 10 or 2% of expected; bills round
+# differently across utilities and partial-month proration adds small drift.
+TARIFF_SANITY_FLOOR_RUPEES = 10
+TARIFF_SANITY_PCT = 0.02
 
 
 def _parse_iso_date(value: Any) -> date | None:
@@ -140,6 +147,29 @@ def validate_extraction(data: dict[str, Any]) -> tuple[bool, list[str]]:
                     f"net_bill_amount ({net_bill:.2f}) within ±Rs. "
                     f"{BILL_MATH_TOLERANCE_RUPEES}."
                 )
+
+    # --- R9: tariff sanity (LT-1 domestic only) ---
+    # Catches Gemini hallucinating energy_charges when units_consumed is read
+    # correctly (or vice versa). LT-1 has a flat Rs. 5.80/unit rate post-April
+    # 2025, so the product is deterministic. Skipped for non-LT-1 categories
+    # (commercial, industrial) which use slabs we don't model here.
+    tariff = data.get("tariff_category")
+    if (
+        isinstance(tariff, str)
+        and tariff.upper().startswith("LT-1")
+        and isinstance(units, (int, float))
+        and isinstance(data.get("energy_charges"), (int, float))
+    ):
+        expected_energy = units * ENERGY_CHARGE_FLAT_RATE
+        actual_energy = data["energy_charges"]
+        tolerance = max(TARIFF_SANITY_FLOOR_RUPEES, expected_energy * TARIFF_SANITY_PCT)
+        if abs(expected_energy - actual_energy) > tolerance:
+            issues.append(
+                f"R9: tariff sanity — units ({units}) × Rs. "
+                f"{ENERGY_CHARGE_FLAT_RATE}/unit = Rs. {expected_energy:.2f} "
+                f"does not match energy_charges (Rs. {actual_energy:.2f}) "
+                f"within Rs. {tolerance:.0f}. One of the two has likely been misread."
+            )
 
     return (len(issues) == 0), issues
 
