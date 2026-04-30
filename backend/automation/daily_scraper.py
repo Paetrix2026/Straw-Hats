@@ -22,31 +22,35 @@ MESCOM_RURAL_URL = "https://mescomruralpayment.mesco.in/"
 def scrape_due_amount(rr_number: str) -> float:
     """
     Scrape the MESCOM rural payment portal for a specific RR Number to find the due amount.
-    Hackathon stub: Because the exact ASP.NET form variables require a full browser session
-    or explicit VIEWSTATE handling, this performs a basic POST or GET and searches for a ₹ pattern.
-    You will need to adjust the form payload to match the real site's requirements.
+
+    Field names verified against the live form at MESCOM_RURAL_URL:
+    - txtConnectionID (the RR/Connection ID input)
+    - BtnPayment (the submit button)
+    - rbtPaymentOption=1 (required radio: pay full amount)
+    The page also requires __VIEWSTATEGENERATOR alongside __VIEWSTATE.
+
+    The "Net Amount Due:" regex is a best-effort match for the response page;
+    the actual MESCOM portal may redirect to a separate payment page rather
+    than render the amount inline. Treat 0.0 as "not found / no due".
     """
     try:
-        # Example to fetch the initial VIEWSTATE:
         session = requests.Session()
         resp = session.get(MESCOM_RURAL_URL, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        viewstate = soup.find("input", {"id": "__VIEWSTATE"})
-        viewstate_val = viewstate["value"] if viewstate else ""
-        
-        event_val = soup.find("input", {"id": "__EVENTVALIDATION"})
-        event_val_val = event_val["value"] if event_val else ""
 
-        # Send the RR Number in the form payload
-        # Replace 'txtRRNumber' or equivalent with actual input ID from the site
+        def _hidden(name: str) -> str:
+            tag = soup.find("input", {"name": name})
+            return tag["value"] if tag and tag.has_attr("value") else ""
+
         payload = {
-            "__VIEWSTATE": viewstate_val,
-            "__EVENTVALIDATION": event_val_val,
-            "txtRRNumber": rr_number,  # IMPORTANT: Check actual input name
-            "btnSubmit": "Submit"      # IMPORTANT: Check actual button name
+            "__VIEWSTATE":          _hidden("__VIEWSTATE"),
+            "__VIEWSTATEGENERATOR": _hidden("__VIEWSTATEGENERATOR"),
+            "__EVENTVALIDATION":    _hidden("__EVENTVALIDATION"),
+            "txtConnectionID":      rr_number,
+            "rbtPaymentOption":     "1",
+            "BtnPayment":           "Continue",
         }
-        
+
         post_resp = session.post(MESCOM_RURAL_URL, data=payload, timeout=15)
         
         # Scrape amount logic
@@ -68,46 +72,60 @@ def scrape_due_amount(rr_number: str) -> float:
 # --- Automation Pipeline ---
 
 def run_daily_scraping_job():
-    """Fetches all users, checks their MESCOM due amount, and dispatches a reminder."""
+    """Fetches all users, checks their MESCOM due amount, and dispatches a reminder.
+
+    RR-number resolution prefers ``users.rr_number`` (set explicitly via the
+    ACCOUNT command) and falls back to the most recent ``bills.rr_number``
+    (extracted from a bill photo). Without the fallback users who have only
+    sent bills (no ACCOUNT command) are missed; without the primary lookup
+    users who have only run ACCOUNT (no bill yet) are missed.
+    """
     logger.info("Starting daily MESCOM bill scraping job...")
     try:
         client = supabase_client.init_client()
-        
-        # Fetch users and their recent bills to extract their RR number
-        response = client.table("users").select("id, phone_number, bills(rr_number, created_at)").execute()
+
+        # Pull both the user-level rr_number and any bill-level rr_numbers.
+        response = (
+            client.table("users")
+            .select("id, phone_number, rr_number, bills(rr_number, created_at)")
+            .execute()
+        )
         users = response.data
-        
+
         for user in users:
-            bills = user.get("bills", [])
-            if not bills:
-                continue
-                
-            # Get latest valid rr_number
-            bills.sort(key=lambda b: b["created_at"], reverse=True)
-            latest_rr = None
-            for b in bills:
-                if b.get("rr_number"):
-                    latest_rr = b["rr_number"]
-                    break
-                    
+            # 1. Prefer the explicitly-linked ACCOUNT rr_number.
+            latest_rr = user.get("rr_number")
+
+            # 2. Fall back to the most recent bill's rr_number.
+            if not latest_rr:
+                bills = user.get("bills") or []
+                bills.sort(key=lambda b: b.get("created_at") or "", reverse=True)
+                latest_rr = next(
+                    (b["rr_number"] for b in bills if b.get("rr_number")),
+                    None,
+                )
+
             if not latest_rr:
                 continue
-                
-            # Scrape using the RR Number
+
             amount_due = scrape_due_amount(latest_rr)
-            
+
             if amount_due > 0:
-                logger.info(f"User {user['phone_number']} (RR: {latest_rr}) has a due of ₹{amount_due}.")
-                
+                logger.info(
+                    f"User {user['phone_number']} (RR: {latest_rr}) has a due of ₹{amount_due}."
+                )
+
                 message = (
                     f"Hi there! ⚡\n\n"
                     f"It looks like your MESCOM account ({latest_rr}) has an outstanding due of *Rs. {amount_due}*.\n\n"
                     f"📸 Reply with a clear photo of your latest bill, and I'll analyze it to see if you can save on your charges!"
                 )
-                
-                # Dispatch Twilio message
+
+                # Dispatch Twilio message. 1-second gap matches the
+                # bill-processing rate-limit policy (CLAUDE.md §6).
                 twilio_dispatcher.send_text(user["phone_number"], message)
-                
+                time.sleep(1.0)
+
     except Exception as e:
         logger.exception(f"Failed to run daily scraping job: {e}")
 

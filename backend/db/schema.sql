@@ -31,10 +31,13 @@ CREATE TABLE IF NOT EXISTS users (
     -- prefix form, so the constraint was dropped 2026-04-19.
 );
 
--- For pre-existing live projects: apply this ALTER once. Idempotent.
+-- For pre-existing live projects: apply these ALTERs once. Idempotent.
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS language_preference TEXT DEFAULT NULL
     CHECK (language_preference IN ('en', 'kn'));
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS rr_number TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number);
 CREATE INDEX IF NOT EXISTS idx_users_consent ON users(consent_given) WHERE consent_given = TRUE;
